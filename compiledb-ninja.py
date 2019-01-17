@@ -27,11 +27,14 @@ import subprocess
 import json
 import click
 
-def get_status_output(*args, **kwargs):
+def get_status_output(cmd):
     """implement for shel command"""
-    proc = subprocess.Popen(*args, **kwargs)
-    stdout, stderr = proc.communicate()
-    return proc.returncode, stdout, stderr
+    try:
+        stdout = subprocess.check_output(cmd, shell=True)
+    except subprocess.CalledProcessError as proce:
+        return proce.returncode, stdout
+
+    return 0, stdout
 
 
 DESCRIPTION_PATTERN = re.compile(r"(?:^[\s]*)(?:description = )(?P<TARGET_TPYE>[^:]+)"
@@ -57,11 +60,11 @@ def parse_file(infile, outfile):
         if obj is not None:
             cmd = obj.group('CMD')
             cmd = cmd.replace(r"\$$", r"$")
-            status, output, stderr = get_status_output("echo " + cmd)
+            status, output = get_status_output("echo " + cmd)
             if status != 0:
                 print("""Error parsing line:{:d} current_file :{:s}
-                cmd= \n{:s} \nstderr = {:s}""".format(
-                    line_num, current_file, cmd, stderr))
+                cmd= \n{:s} \n""".format(
+                    line_num, current_file, cmd))
                 exit(status)
             outputs = output.split(" ")
             if current_file is not None:
