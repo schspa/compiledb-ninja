@@ -1,0 +1,1 @@
+# compiledb-ninja
