@@ -66,7 +66,7 @@ def parse_file(infile, outfile):
                 cmd= \n{:s} \n""".format(
                     line_num, current_file, cmd))
                 exit(status)
-            outputs = output.split(" ")
+            outputs = re.split(' |\n', output)
             if current_file is not None:
                 source_dir = os.getenv("ANDROID_BUILD_TOP", os.getcwd())
                 compile_command.append({"file": current_file,
