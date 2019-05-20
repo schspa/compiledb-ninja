@@ -94,7 +94,7 @@ def parse_file(infile, outfile):
               help='Build log file to parse compilation commands from.' +
               '(Default: stdin)', required=False, default=sys.stdin)
 @click.option('-o', '--output', 'outfile', type=click.File('w'),
-              help="Output file path (Default: std output)",
+              help="Output file path (Default: compile_commands.json)",
               required=False, default='compile_commands.json')
 def compiledb_ninja(infile, outfile):
     """compiledb entry"""
