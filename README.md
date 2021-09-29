@@ -1,14 +1,19 @@
 # compiledb-ninja
 
-## used for generate compile_commands.json for emacs, vscode and so on.
+## Introduction
+
+Used for generating compile_commands.json for instructing IDE plugins (emacs, vscode, clangd...) how to compile a ninja project.
+
+Tested working on the Ninja file produced by AOSP 7.1 r57. 
 
 ```bash
-[schspa@Arch-Schspa aosp]$ source build/envsetup.sh
-[schspa@Arch-Schspa aosp]$ lunch aosp_arm64-eng
-[schspa@Arch-Schspa aosp]$ make -j8
-[schspa@Arch-Schspa aosp]$ # wait for a full build
-[schspa@Arch-Schspa aosp]$ python ~/work/src/compiledb-ninja/compiledb-ninja.py -p out/build-aosp_arm64.ninja
-[schspa@Arch-Schspa aosp]$ ls -al compile_commands.json
--rw-r--r-- 1 schspa schspa 59413087 May 20 14:57 compile_commands.json
+source build/envsetup.sh
+# Lunch any configuration you need
+lunch aosp_arm64-eng
+# Can stop making as long as ninja file is created
+make -j8
+# Use a proper number of processes
+python ./compiledb-ninja.py -p out/build-aosp_arm64.ninja -j 4
+# Enjoy your compile_commands.json
+ls -al compile_commands.json
 ```
-![image](https://raw.githubusercontent.com/schspa/compiledb-ninja/master/pic/auto-complete.gif)
