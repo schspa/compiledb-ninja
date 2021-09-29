@@ -63,7 +63,7 @@ def extract_first_cmd(cmdline):
         exit(-1)
 
 
-def parse_func(parsing_queue, result_queue, working, processed_lines, exit_flag):
+def parse_func(parsing_queue, result_queue, working, processed_lines, exit_flag, quite):
     """Parse Ninja commands which were read from file in another proc"""
     # qsize, full, empty in Python multiprocessing Queue are all unreliable
     while (exit_flag.value == 0) and (working.value != 0):
@@ -79,7 +79,8 @@ def parse_func(parsing_queue, result_queue, working, processed_lines, exit_flag)
             break
 
         processed_lines.value += 1
-        print(processed_lines.value)
+        if quite == 0:
+            print(processed_lines.value)
         status, output = get_status_output("echo " + cmd)
         if status != 0:
             print("""Error parsing current_file :{:s}
@@ -128,6 +129,8 @@ def write_ret(result_queue, outfile, nprocs):
 
 
 @click.command()
+@click.option('-q', '--quite', 'quite', flag_value='quite', default=False,
+              help='Use quite output')
 @click.option('-j', '--nprocs', 'nprocs', default=1,
               help='Number of threads parsing commands')
 @click.option('-p', '--parse', 'infile', type=click.File('r'),
@@ -136,7 +139,7 @@ def write_ret(result_queue, outfile, nprocs):
 @click.option('-o', '--output', 'outfile',
               help="Output file path (Default: compile_commands.json)",
               required=False, default='compile_commands.json')
-def compiledb_ninja(infile, outfile, nprocs):
+def compiledb_ninja(infile, outfile, nprocs, quite):
     """compiledb entry"""
     working = Value('i', 1)
     exit_flag = Value('i', 0)
@@ -164,7 +167,8 @@ def compiledb_ninja(infile, outfile, nprocs):
                                            result_queue,
                                            working,
                                            processed_lines,
-                                           exit_flag
+                                           exit_flag,
+                                           quite
                                            )))
     th_parse_file.start()
     th_write_ret.start()
