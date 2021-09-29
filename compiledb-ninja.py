@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Tools for generate comile_commands.json for for android"""
 #
@@ -20,52 +20,84 @@
 #   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
+import json
 import os
-import sys
+import queue
 import re
 import subprocess
-import json
+import sys
 import click
-
-def get_status_output(cmd):
-    """implement for shel command"""
-    stdout = ''
-    try:
-        stdout = subprocess.check_output(cmd, shell=True)
-    except subprocess.CalledProcessError as proce:
-        return proce.returncode, stdout
-
-    return 0, stdout
-
+from multiprocessing import Process, Queue, Value
 
 DESCRIPTION_PATTERN = re.compile(r"(?:^[\s]*)(?:description = )(?P<TARGET_TPYE>[^:]+)"
                                  + r"(?:\:[\s]*)(?P<TARGET>[\S]+)"
                                  + r"(?:[\s]*<=[\s]*)(?P<FILE>[\S]+)")
 CMD_PATTERN = re.compile(r"(?:^[\s]*)(?:command = /bin/bash -c )(?P<CMD>.+)$")
 FILE_REGEX = re.compile(r"^.+\.c$|^.+\.cc$|^.+\.cpp$|^.+\.cxx$|^.+\.s$", re.IGNORECASE)
+FIRST_CMD_REGEX = re.compile(r"(?P<BEG>^\"\()(?P<PWD>PWD=\S*\s*)?(?P<CMD>[^&]*)(?P<END>\)\s*\&)")
+MANUAL_EXITCODE = 1
+source_dir = os.getenv("ANDROID_BUILD_TOP", os.getcwd())
 
 
-# test_command="""
-# command = /bin/bash -c "PWD=/proc/self/cwd  prebuilts/clang/host/linux-x86/clang-4691093/bin/clang++ 	-I miui/frameworks/base/native/libreshook/include -I frameworks/base/tools/aapt -I out/host/linux-x86/obj/EXECUTABLES/aapt_intermediates -I out/host/linux-x86/gen/EXECUTABLES/aapt_intermediates -I libnativehelper/include_jni \$$(cat out/host/linux-x86/obj/EXECUTABLES/aapt_intermediates/import_includes)  -I system/core/include -I system/media/audio/include -I hardware/libhardware/include -I hardware/libhardware_legacy/include -I hardware/ril/include -I libnativehelper/include -I frameworks/native/include -I frameworks/native/opengl/include -I frameworks/av/include  -c  -Wa,--noexecstack -fPIC -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fstack-protector -D__STDC_FORMAT_MACROS -D__STDC_CONSTANT_MACROS --gcc-toolchain=prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.15-4.8 --sysroot prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.15-4.8/sysroot -fstack-protector-strong -m64 -DANDROID -fmessage-length=0 -W -Wall -Wno-unused -Winit-self -Wpointer-arith -no-canonical-prefixes -DNDEBUG -UDEBUG -fno-exceptions -Wno-multichar -O2 -g -fno-strict-aliasing -fdebug-prefix-map=/proc/self/cwd= -D__compiler_offsetof=__builtin_offsetof -Werror=int-conversion -Wno-reserved-id-macro -Wno-format-pedantic -Wno-unused-command-line-argument -fcolor-diagnostics -Wno-expansion-to-defined -Wno-zero-as-null-pointer-constant -fdebug-prefix-map=\$$PWD/=   -target x86_64-linux-gnu -Bprebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.15-4.8/x86_64-linux/bin  -Wsign-promo -Wno-inconsistent-missing-override -Wno-null-dereference -D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS -Wno-thread-safety-negative -Wno-gnu-include-next  -isystem prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.15-4.8/x86_64-linux/include/c++/4.8 -isystem prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.15-4.8/x86_64-linux/include/c++/4.8/backward -isystem prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.15-4.8/x86_64-linux/include/c++/4.8/x86_64-linux -std=gnu++14  -DAAPT_VERSION=\\\"\$$(cat out/build_number.txt)\\\" -Wall -Werror -DMIUI_RES_HOOK -fPIE -D_USING_LIBCXX -DANDROID_STRICT -nostdinc++  -Werror=int-to-pointer-cast -Werror=pointer-to-int-cast -Werror=address-of-temporary -Werror=return-type -Wno-tautological-constant-compare -Wno-null-pointer-arithmetic -Wno-enum-compare -Wno-enum-compare-switch   -MD -MF out/host/linux-x86/obj/EXECUTABLES/aapt_intermediates/Main.d -o out/host/linux-x86/obj/EXECUTABLES/aapt_intermediates/Main.o frameworks/base/tools/aapt/Main.cpp"
-# """
+def get_status_output(cmd):
+    """For parsing a cmd from ninja format to original shell command format"""
+    stdout = ''
+    try:
+        stdout = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError as proce:
+        return proce.returncode, stdout
+    return 0, stdout.decode('utf-8')
 
-# obj = re.search(CMD_PATTERN, test_command)
-# if obj is not None:
-#     cmd = obj.group('CMD')
-#     print(cmd)
-#     status, output = get_status_output("echo " + cmd)
-#     print("echo return {:}", status, output)
 
-# exit(0)
+def has_multiple_cmds(cmdline):
+    return cmdline[:2] == '"('
 
-def parse_file(infile, outfile):
-    """parse command log file"""
+
+def extract_first_cmd(cmdline):
+    obj = re.search(FIRST_CMD_REGEX, cmdline)
+    if obj is not None:
+        first_cmd = obj.group('CMD')
+        return f'"{first_cmd}"'
+    else:
+        print("Error parsing multiline cmd, txt={:s}\n".format(cmdline))
+        exit(-1)
+
+
+def parse_func(parsing_queue, result_queue, working, processed_lines, exit_flag):
+    """Parse Ninja commands which were read from file in another proc"""
+    # qsize, full, empty in Python multiprocessing Queue are all unreliable
+    while (exit_flag.value == 0) and (working.value != 0):
+        try:
+            s = parsing_queue.get_nowait()
+        except queue.Empty:
+            continue
+        cmd, current_file = s
+
+        if cmd is None and current_file is None:
+            # notify all parse func to stop
+            working.value = 0
+            break
+
+        processed_lines.value += 1
+        print(processed_lines.value)
+        status, output = get_status_output("echo " + cmd)
+        if status != 0:
+            print("""Error parsing current_file :{:s}
+            cmd= \n{:s} \n """.format(current_file, cmd))
+            exit(status)
+        outputs = re.split('[ \n]', output)
+        result_queue.put({"file": current_file,
+                          "directory": source_dir,
+                          "arguments": outputs})
+    result_queue.put(None)
+
+
+def parse_file(infile, parsing_queue, working, exit_flag):
+    """parse Ninja file to obtain all command line"""
     line_num = 0
-    compile_command = []
-
     current_file = None
     for txt in infile:
-        line_num = line_num + 1
+        line_num += 1
         obj = re.search(DESCRIPTION_PATTERN, txt)
         if obj is not None and FILE_REGEX.match(obj.group('FILE')):
             current_file = obj.group('FILE')
@@ -74,31 +106,75 @@ def parse_file(infile, outfile):
         obj = re.search(CMD_PATTERN, txt)
         if obj is not None:
             cmd = obj.group('CMD')
-            status, output = get_status_output("echo " + cmd)
-            if status != 0:
-                print("""Error parsing line:{:d} current_file :{:s}
-                cmd= \n{:s} \n txt={:s}\n""".format(
-                    line_num, current_file, cmd, txt))
-                exit(status)
-            outputs = re.split(' |\n', output)
-            if current_file is not None:
-                source_dir = os.getenv("ANDROID_BUILD_TOP", os.getcwd())
-                compile_command.append({"file": current_file,
-                                        "directory": source_dir,
-                                        "arguments": outputs})
-                current_file = None
-    outfile.write(json.dumps(compile_command, sort_keys=True, indent=4))
+            if has_multiple_cmds(cmd):
+                cmd = extract_first_cmd(cmd)
+            parsing_queue.put([cmd, current_file])
+            current_file = None
+    parsing_queue.put([None, None])
+
+
+def write_ret(result_queue, outfile, nprocs):
+    with open(outfile, 'w') as f:
+        n_parse_cmd_proc_return = 0
+        result_list = []
+        while n_parse_cmd_proc_return < nprocs:
+            r = result_queue.get()
+            if r is None:
+                n_parse_cmd_proc_return += 1
+            else:
+                result_list.append(r)
+        print("Writing result to disk")
+        f.write(json.dumps(result_list, sort_keys=True, indent=4))
+
 
 @click.command()
+@click.option('-j', '--nprocs', 'nprocs', default=1,
+              help='Number of threads parsing commands')
 @click.option('-p', '--parse', 'infile', type=click.File('r'),
               help='Build log file to parse compilation commands from.' +
-              '(Default: stdin)', required=False, default=sys.stdin)
-@click.option('-o', '--output', 'outfile', type=click.File('w'),
+                   '(Default: stdin)', required=False, default=sys.stdin)
+@click.option('-o', '--output', 'outfile',
               help="Output file path (Default: compile_commands.json)",
               required=False, default='compile_commands.json')
-def compiledb_ninja(infile, outfile):
+def compiledb_ninja(infile, outfile, nprocs):
     """compiledb entry"""
-    parse_file(infile, outfile)
+    working = Value('i', 1)
+    exit_flag = Value('i', 0)
+    processed_lines = Value('i', 0)
+    parsing_queue = Queue()
+    result_queue = Queue()
+    main_pid = os.getpid()
+    print(f"Using {nprocs} to parse commands")
+
+    th_parse_file = Process(target=parse_file,
+                            args=(infile,
+                                  parsing_queue,
+                                  working,
+                                  exit_flag
+                                  ))
+    th_write_ret = Process(target=write_ret,
+                           args=(result_queue,
+                                 outfile,
+                                 nprocs
+                                 ))
+    th_parse_cmds = []
+    for i in range(0, nprocs):
+        th_parse_cmds.append(Process(target=parse_func,
+                                     args=(parsing_queue,
+                                           result_queue,
+                                           working,
+                                           processed_lines,
+                                           exit_flag
+                                           )))
+    th_parse_file.start()
+    th_write_ret.start()
+    for i in range(0, nprocs):
+        th_parse_cmds[i].start()
+    th_parse_file.join()
+    th_write_ret.join()
+    for i in range(0, nprocs):
+        th_parse_cmds[i].join()
+
 
 if __name__ == '__main__':
     compiledb_ninja()
