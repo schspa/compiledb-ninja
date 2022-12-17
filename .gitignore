@@ -102,3 +102,7 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+test.py
+.idea/
+build-aosp*
+compile_commands.json
